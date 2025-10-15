@@ -1,6 +1,7 @@
 ﻿using LegislationMigration.Data;
 using LegislationMigration.Models.DTOs;
 using LegislationMigration.Models.Entities;
+using LegislationMigration.Models.NewEntities;
 using LegislationMigration.Repositories.Interfaces;
 using LegislationMigration.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +20,8 @@ namespace LegislationMigration.Services.Implementations
         private readonly ILogger<LegislationReprocessService> _logger;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
+        private readonly IDbContextFactory<MyDbContext> _oldFactory;
+        private readonly IDbContextFactory<NewDbContext> _newFactory;
 
         public LegislationReprocessService(
         ILegislationRepository repo,
@@ -26,7 +29,9 @@ namespace LegislationMigration.Services.Implementations
         IJobStatusService statusService,
         ILogger<LegislationReprocessService> logger,
         IHttpClientFactory httpClientFactory,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IDbContextFactory<MyDbContext> oldDb,
+        IDbContextFactory<NewDbContext> newDb)
         {
             _repo = repo ?? throw new ArgumentNullException(nameof(repo));
             _extractService = extractService ?? throw new ArgumentNullException(nameof(extractService));
@@ -34,6 +39,8 @@ namespace LegislationMigration.Services.Implementations
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            _oldFactory = oldDb ?? throw new ArgumentNullException(nameof(oldDb));
+            _newFactory = newDb ?? throw new ArgumentNullException(nameof(newDb));
         }
 
         public async Task ReprocessLegislationAsync(string pdfFolderPath, string language)
@@ -106,10 +113,10 @@ namespace LegislationMigration.Services.Implementations
             _logger.LogInformation("🎉 All folder batches processed successfully.");
         }
 
-        private async Task ProcessPdfBatchAsync(List<string> pdfBatch, HttpClient client, string apiUrl, string language)
+        public async Task ProcessPdfBatchAsync(List<string> pdfBatch, HttpClient client, string apiUrl, string language)
         {
-            using var oldDb = CreateDb("OldConnection");
-            using var newDb = CreateDb("DefaultConnection");
+            using var oldDb = await _oldFactory.CreateDbContextAsync();
+            using var newDb = await _newFactory.CreateDbContextAsync();
 
             var jobMap = new Dictionary<string, string>(); // pdf → jobId
 
@@ -130,8 +137,9 @@ namespace LegislationMigration.Services.Implementations
                         continue;
 
                     // Check if already successful
-                    var existing = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
-                    if (existing != null && existing.Status == "Success")
+                    Models.NewEntities.Legislation existing = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+
+                    if (existing != null && existing.JobStatus == "Success")
                         continue;
 
                     using var content = new MultipartFormDataContent();
@@ -150,19 +158,29 @@ namespace LegislationMigration.Services.Implementations
                     if (jobResponse == null)
                         continue;
 
-                    var newRecord = existing ?? new Legislation();
-                    newRecord.SourceFileName = pdfName;
-                    newRecord.LegislationId = oldRecord.LegislationId;
-                    newRecord.JobId = jobResponse.JobId;
-                    newRecord.Status = jobResponse.Status;
-
                     if (existing == null)
-                        newDb.Legislations.Add(newRecord);
+                    {
+                        existing = new Models.NewEntities.Legislation
+                        {
+                            LegislationId = oldRecord.LegislationId,
+                            SourceFileName = pdfName,
+                            JobId = jobResponse.JobId,
+                            JobStatus = jobResponse.Status,
+                            CreatedBy = "system",
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        await newDb.Legislations.AddAsync(existing);
+                    }
                     else
-                        newDb.Legislations.Update(newRecord);
+                    {
+                        existing.JobId = jobResponse.JobId;
+                        existing.JobStatus = jobResponse.Status;
+                        newDb.Legislations.Update(existing);
+                    }
 
                     await newDb.SaveChangesAsync();
                     jobMap[pdfPath] = jobResponse.JobId;
+
 
                     _logger.LogInformation("Submitted Job {JobId} for {Pdf}", jobResponse.JobId, pdfName);
                 }
@@ -186,15 +204,49 @@ namespace LegislationMigration.Services.Implementations
 
                     var pdfName = Path.GetFileName(pdfPath);
                     var record = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+                    Models.Entities.Legislation existing = await oldDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
 
-                    if (record != null && statusObj != null)
+                    if (record != null && statusObj.Status == "completed")
                     {
-                        record.Status = statusObj.Status;
-                        newDb.Legislations.Update(record);
+                        record.JobStatus = statusObj.Status;
+                        var newRecord = new Models.NewEntities.Legislation
+                        {
+                            LegislationId = existing.LegislationId,
+                            Title = statusObj.Result.Title,
+                            StatusId = existing.StatusId,
+                            DateOfIssuance = existing.DateOfIssuance,
+                            HijriDate = existing.HijriDate,
+                            IssuingAuthorityId = existing.IssuingAuthorityId,
+                            LegislationTypeId = existing.LegislationTypeId,
+                            OfficialGazetteNumber = existing.OfficialGazetteNumber,
+                            SourceFileName = statusObj.Result.PdfFileName,
+                            PdfUrl = existing.PdfUrl,
+                            CreatedBy = "system",
+                            CreatedAt = statusObj.CreatedAt,
+                            SourceId = existing.SourceId,
+                            LanguageId = existing.LanguageId,
+                            Aisummary = existing.Aisummary,
+                            DisplayName = existing.DisplayName,
+                            Json = statusText,
+                            CategoryId = existing.CategoryId,
+                            SubCategoryId = existing.SubCategoryId,
+                            Embeddings = existing.Embeddings,
+                            Active = true,
+                            Number = existing.Number,
+                            Version = existing.Version,
+                            ParentLegislationId = existing.ParentLegislationId,
+                            JobId = jobId,
+                            JobStatus = statusObj.Status,
+                        };
+                        newDb.Legislations.Update(newRecord);
                         await newDb.SaveChangesAsync();
                     }
+                    else if (statusObj.Status != "completed")
+                    {
+                        await Task.Delay(TimeSpan.FromMinutes(2));
+                    }
 
-                    _logger.LogInformation("Checked status for {Pdf} (Job {JobId}): {Status}", pdfName, jobId, statusObj?.Status);
+                        _logger.LogInformation("Checked status for {Pdf} (Job {JobId}): {Status}", pdfName, jobId, statusObj?.Status);
                 }
                 catch (Exception ex)
                 {
@@ -202,128 +254,117 @@ namespace LegislationMigration.Services.Implementations
                 }
             }
         }
-        public async Task ReprocessLegislationAsync2(string pdfFolderPath, string language)
-        {
-            const int batchSize = 10;
-            var allPdfPaths = new List<string>();
+        //public async Task ReprocessLegislationAsync2(string pdfFolderPath, string language)
+        //{
+        //    const int batchSize = 10;
+        //    var allPdfPaths = new List<string>();
 
-            foreach (var folder in Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly))
-            {
-                var folderName = Path.GetFileName(folder) ?? string.Empty;
-                try
-                {
-                    var pdfFiles = Directory.GetFiles(folder, "*.pdf", SearchOption.TopDirectoryOnly);
-                    if (pdfFiles.Length == 0)
-                    {
-                        _logger.LogWarning("⚠️ No PDFs found in folder: {Folder}", folder);
-                        continue;
-                    }
+        //    foreach (var folder in Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly))
+        //    {
+        //        var folderName = Path.GetFileName(folder) ?? string.Empty;
+        //        try
+        //        {
+        //            var pdfFiles = Directory.GetFiles(folder, "*.pdf", SearchOption.TopDirectoryOnly);
+        //            if (pdfFiles.Length == 0)
+        //            {
+        //                _logger.LogWarning("⚠️ No PDFs found in folder: {Folder}", folder);
+        //                continue;
+        //            }
 
-                    string selectedPdf = pdfFiles.Length == 1
-                        ? pdfFiles[0]
-                        : pdfFiles
-                            .Select(p => new { Path = p, NameNoExt = Path.GetFileNameWithoutExtension(p) })
-                            .FirstOrDefault(x => string.Equals(
-                                x.NameNoExt?.Trim(),
-                                folderName.Trim(),
-                                StringComparison.OrdinalIgnoreCase))?.Path
-                            ?? pdfFiles.OrderBy(p => p).First();
+        //            string selectedPdf = pdfFiles.Length == 1
+        //                ? pdfFiles[0]
+        //                : pdfFiles
+        //                    .Select(p => new { Path = p, NameNoExt = Path.GetFileNameWithoutExtension(p) })
+        //                    .FirstOrDefault(x => string.Equals(
+        //                        x.NameNoExt?.Trim(),
+        //                        folderName.Trim(),
+        //                        StringComparison.OrdinalIgnoreCase))?.Path
+        //                    ?? pdfFiles.OrderBy(p => p).First();
 
-                    allPdfPaths.Add(selectedPdf);
-                    _logger.LogInformation("Selected PDF: {Pdf} (folder: {Folder})", selectedPdf, folder);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, " Error scanning folder: {Folder}", folder);
-                }
-            }
+        //            allPdfPaths.Add(selectedPdf);
+        //            _logger.LogInformation("Selected PDF: {Pdf} (folder: {Folder})", selectedPdf, folder);
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            _logger.LogError(ex, " Error scanning folder: {Folder}", folder);
+        //        }
+        //    }
 
-            if (!allPdfPaths.Any())
-            {
-                _logger.LogWarning("No PDF files found to process.");
-                return;
-            }
+        //    if (!allPdfPaths.Any())
+        //    {
+        //        _logger.LogWarning("No PDF files found to process.");
+        //        return;
+        //    }
 
-            _logger.LogInformation("Total PDFs to process: {Count}", allPdfPaths.Count);
+        //    _logger.LogInformation("Total PDFs to process: {Count}", allPdfPaths.Count);
 
-            using var client = _httpClientFactory.CreateClient();
-            var apiUrl = _configuration["AIService:BaseApiUrl"]; // e.g., "https://localhost:5001/api/ai/"
+        //    using var client = _httpClientFactory.CreateClient();
+        //    var apiUrl = _configuration["AIService:BaseApiUrl"]; // e.g., "https://localhost:5001/api/ai/"
 
-            for (int i = 0; i < allPdfPaths.Count; i += batchSize)
-            {
-                var batch = allPdfPaths.Skip(i).Take(batchSize).ToList();
-                var jobMap = new Dictionary<string, string>(); // pdfPath → jobId
+        //    for (int i = 0; i < allPdfPaths.Count; i += batchSize)
+        //    {
+        //        var batch = allPdfPaths.Skip(i).Take(batchSize).ToList();
+        //        var jobMap = new Dictionary<string, string>(); // pdfPath → jobId
 
-                // 1️⃣ Submit extract jobs
-                foreach (var pdfPath in batch)
-                {
-                    try
-                    {
-                        using var content = new MultipartFormDataContent();
-                        using var fileStream = File.OpenRead(pdfPath);
-                        var fileContent = new StreamContent(fileStream);
-                        fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
-                        content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
+        //        // 1️⃣ Submit extract jobs
+        //        foreach (var pdfPath in batch)
+        //        {
+        //            try
+        //            {
+        //                using var content = new MultipartFormDataContent();
+        //                using var fileStream = File.OpenRead(pdfPath);
+        //                var fileContent = new StreamContent(fileStream);
+        //                fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        //                content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
 
-                        var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
-                        var result = await response.Content.ReadAsStringAsync();
+        //                var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
+        //                var result = await response.Content.ReadAsStringAsync();
 
-                        if (!response.IsSuccessStatusCode)
-                        {
-                            _logger.LogError("❌ API failed for {Pdf} with status {Status} and message: {Result}", pdfPath, response.StatusCode, result);
-                            continue;
-                        }
+        //                if (!response.IsSuccessStatusCode)
+        //                {
+        //                    _logger.LogError("❌ API failed for {Pdf} with status {Status} and message: {Result}", pdfPath, response.StatusCode, result);
+        //                    continue;
+        //                }
 
-                        var jobResponse = JsonConvert.DeserializeObject<ExtractJobResponse>(result);
-                        jobMap[pdfPath] = jobResponse?.JobId ?? string.Empty;
-                        _logger.LogInformation("✅ Submitted job {JobId} for {Pdf}", jobResponse?.JobId, Path.GetFileName(pdfPath));
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Error submitting extract job for {Pdf}", pdfPath);
-                    }
-                }
+        //                var jobResponse = JsonConvert.DeserializeObject<ExtractJobResponse>(result);
+        //                jobMap[pdfPath] = jobResponse?.JobId ?? string.Empty;
+        //                _logger.LogInformation("✅ Submitted job {JobId} for {Pdf}", jobResponse?.JobId, Path.GetFileName(pdfPath));
+        //            }
+        //            catch (Exception ex)
+        //            {
+        //                _logger.LogError(ex, "❌ Error submitting extract job for {Pdf}", pdfPath);
+        //            }
+        //        }
 
-                // 2️⃣ Wait 2 minutes before checking
-                _logger.LogInformation("⏳ Waiting 2 minutes before checking job statuses...");
-                await Task.Delay(TimeSpan.FromMinutes(2));
+        //        // 2️⃣ Wait 2 minutes before checking
+        //        _logger.LogInformation("⏳ Waiting 2 minutes before checking job statuses...");
+        //        await Task.Delay(TimeSpan.FromMinutes(2));
 
-                // 3️⃣ Check statuses
-                foreach (var (pdfPath, jobId) in jobMap)
-                {
-                    try
-                    {
-                        if (string.IsNullOrEmpty(jobId))
-                            continue;
+        //        // 3️⃣ Check statuses
+        //        foreach (var (pdfPath, jobId) in jobMap)
+        //        {
+        //            try
+        //            {
+        //                if (string.IsNullOrEmpty(jobId))
+        //                    continue;
 
-                        var statusResponse = await client.GetAsync($"{apiUrl}status/{jobId}");
-                        var statusText = await statusResponse.Content.ReadAsStringAsync();
-                        var status = JsonConvert.DeserializeObject<JobStatusResponse>(statusText)?.Status;
+        //                var statusResponse = await client.GetAsync($"{apiUrl}status/{jobId}");
+        //                var statusText = await statusResponse.Content.ReadAsStringAsync();
+        //                var status = JsonConvert.DeserializeObject<JobStatusResponse>(statusText)?.Status;
 
-                        if (status?.Equals("completed", StringComparison.OrdinalIgnoreCase) == true)
-                            _logger.LogInformation("✅ {Pdf} processed successfully (Job {JobId})", Path.GetFileName(pdfPath), jobId);
-                        else
-                            _logger.LogWarning("⚠️ {Pdf} not yet complete (Status: {Status})", Path.GetFileName(pdfPath), status);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "❌ Error checking job status for {Pdf}", pdfPath);
-                    }
-                }
-            }
+        //                if (status?.Equals("completed", StringComparison.OrdinalIgnoreCase) == true)
+        //                    _logger.LogInformation("✅ {Pdf} processed successfully (Job {JobId})", Path.GetFileName(pdfPath), jobId);
+        //                else
+        //                    _logger.LogWarning("⚠️ {Pdf} not yet complete (Status: {Status})", Path.GetFileName(pdfPath), status);
+        //            }
+        //            catch (Exception ex)
+        //            {
+        //                _logger.LogError(ex, "❌ Error checking job status for {Pdf}", pdfPath);
+        //            }
+        //        }
+        //    }
 
-            _logger.LogInformation("🎉 Reprocessing completed for all PDFs.");
-        }
-
-        #region Private DbContext Helpers
-        private MyDbContext CreateDb(string name)
-        {
-            var conn = _configuration.GetConnectionString(name);
-            var options = new DbContextOptionsBuilder<MyDbContext>()
-                .UseSqlServer(conn)
-                .Options;
-            return new MyDbContext(options);
-        }
-        #endregion
+        //    _logger.LogInformation("🎉 Reprocessing completed for all PDFs.");
+        //}
     }
 }

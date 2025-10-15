@@ -22,10 +22,10 @@ internal class Program
                 var configuration = context.Configuration;
 
                 // Add DbContext
-                services.AddDbContext<MyDbContext>(options =>
+                services.AddDbContextFactory<NewDbContext>(options =>
                     options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")));
 
-                services.AddDbContext<MyDbContext>(options =>
+                services.AddDbContextFactory<MyDbContext>(options =>
                     options.UseSqlServer(configuration.GetConnectionString("OldConnection")));
 
                 // Add HTTP client

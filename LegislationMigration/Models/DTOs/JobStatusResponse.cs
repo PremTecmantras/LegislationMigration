@@ -19,7 +19,7 @@ namespace LegislationMigration.Models.DTOs
         public string Filename { get; set; }
 
         [JsonProperty("created_at")]
-        public DateTime? CreatedAt { get; set; }
+        public DateTime CreatedAt { get; set; }
 
         [JsonProperty("started_at")]
         public DateTime? StartedAt { get; set; }

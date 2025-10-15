@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36301.6 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LegislationMigration", "LegislationMigration\LegislationMigration.csproj", "{91744F6B-6BF1-4A2E-AC4C-68D6AC4B23DD}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{91744F6B-6BF1-4A2E-AC4C-68D6AC4B23DD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{91744F6B-6BF1-4A2E-AC4C-68D6AC4B23DD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{91744F6B-6BF1-4A2E-AC4C-68D6AC4B23DD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{91744F6B-6BF1-4A2E-AC4C-68D6AC4B23DD}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {BB951247-2CE9-4C79-9A2B-26A3B98F3938}
+	EndGlobalSection
+EndGlobal

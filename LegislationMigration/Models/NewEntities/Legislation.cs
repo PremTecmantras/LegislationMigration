@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace LegislationMigration.Models.NewEntities;
 
 public partial class Legislation
 {
+    [Key]
     public long LegislationId { get; set; }
 
     public string Title { get; set; } = null!;
@@ -56,8 +58,6 @@ public partial class Legislation
     public decimal? Version { get; set; }
 
     public int? ParentLegislationId { get; set; }
-
-    public string? TextContent { get; set; }
 
     public string? JobId { get; set; }
 

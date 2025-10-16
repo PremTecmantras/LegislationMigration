@@ -57,8 +57,6 @@ public partial class Legislation
 
     public int? ParentLegislationId { get; set; }
 
-    public string? TextContent { get; set; }
-
     public virtual ICollection<AmendedLegislation> AmendedLegislations { get; set; } = new List<AmendedLegislation>();
 
     public virtual ICollection<AmendedLegislationsSilver> AmendedLegislationsSilvers { get; set; } = new List<AmendedLegislationsSilver>();

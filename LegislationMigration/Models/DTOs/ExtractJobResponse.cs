@@ -9,7 +9,7 @@ namespace LegislationMigration.Models.DTOs
 {
     public class ExtractJobResponse
     {
-        [JsonProperty("job_id")]
+        [JsonProperty("jobId")]
         public string JobId { get; set; }
 
         [JsonProperty("status")]

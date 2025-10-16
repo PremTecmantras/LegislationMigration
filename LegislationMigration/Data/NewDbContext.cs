@@ -213,7 +213,6 @@ public partial class NewDbContext : DbContext
             entity.Property(e => e.SourceId).HasColumnName("Source_Id");
             entity.Property(e => e.StatusId).HasColumnName("Status_Id");
             entity.Property(e => e.SubCategoryId).HasColumnName("Sub_Category_Id");
-            entity.Property(e => e.TextContent).HasColumnName("Text_Content");
             entity.Property(e => e.Title).HasMaxLength(500);
             entity.Property(e => e.Version).HasColumnType("decimal(5, 1)");
 

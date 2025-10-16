@@ -4,6 +4,7 @@ using LegislationMigration.Models.Entities;
 using LegislationMigration.Models.NewEntities;
 using LegislationMigration.Repositories.Interfaces;
 using LegislationMigration.Services.Interfaces;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -115,256 +116,290 @@ namespace LegislationMigration.Services.Implementations
 
         public async Task ProcessPdfBatchAsync(List<string> pdfBatch, HttpClient client, string apiUrl, string language)
         {
-            using var oldDb = await _oldFactory.CreateDbContextAsync();
-            using var newDb = await _newFactory.CreateDbContextAsync();
-
-            var jobMap = new Dictionary<string, string>(); // pdf → jobId
-
-            // 1️⃣ Submit extract jobs
-            foreach (var pdfPath in pdfBatch)
+            try
             {
-                try
+
+
+                using var oldDb = await _oldFactory.CreateDbContextAsync();
+                using var newDb = await _newFactory.CreateDbContextAsync();
+
+                var jobMap = new Dictionary<string, string>(); // pdf → jobId
+
+                // 1️⃣ Submit extract jobs
+                foreach (var pdfPath in pdfBatch)
                 {
-                    string pdfName = Path.GetFileName(pdfPath);
-
-                    // Check in old DB
-                    var oldRecord = await oldDb.Legislations
-                        .Where(l => l.SourceFileName == pdfName)
-                        .Select(l => new { l.LegislationId, l.SourceFileName, l.LanguageId })
-                        .FirstOrDefaultAsync();
-
-                    if (oldRecord == null)
-                        continue;
-
-                    // Check if already successful
-                    Models.NewEntities.Legislation existing = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
-
-                    if (existing != null && existing.JobStatus == "Success")
-                        continue;
-
-                    using var content = new MultipartFormDataContent();
-                    using var fileStream = File.OpenRead(pdfPath);
-                    var fileContent = new StreamContent(fileStream);
-                    fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
-                    content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
-
-                    var response = await client.PostAsync($"{apiUrl}extract?language={oldRecord.LanguageId}", content);
-                    var result = await response.Content.ReadAsStringAsync();
-
-                    if (!response.IsSuccessStatusCode)
-                        continue;
-
-                    var jobResponse = JsonConvert.DeserializeObject<ExtractJobResponse>(result);
-                    if (jobResponse == null)
-                        continue;
-
-                    if (existing == null)
+                    try
                     {
-                        existing = new Models.NewEntities.Legislation
+                        string pdfName = Path.GetFileName(pdfPath);
+
+                        // Check in old DB
+                        var oldRecord = await oldDb.Legislations
+                            .Where(l => l.SourceFileName == pdfName)
+                            .FirstOrDefaultAsync();
+
+                        if (oldRecord == null)
+                            continue;
+
+                        // Check if already successful
+                        Models.NewEntities.Legislation existing = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+                        if (existing != null)
                         {
-                            LegislationId = oldRecord.LegislationId,
-                            SourceFileName = pdfName,
-                            JobId = jobResponse.JobId,
-                            JobStatus = jobResponse.Status,
-                            CreatedBy = "system",
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        await newDb.Legislations.AddAsync(existing);
-                    }
-                    else
-                    {
-                        existing.JobId = jobResponse.JobId;
-                        existing.JobStatus = jobResponse.Status;
-                        newDb.Legislations.Update(existing);
-                    }
-
-                    await newDb.SaveChangesAsync();
-                    jobMap[pdfPath] = jobResponse.JobId;
-
-
-                    _logger.LogInformation("Submitted Job {JobId} for {Pdf}", jobResponse.JobId, pdfName);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error submitting job for {Pdf}", pdfPath);
-                }
-            }
-
-            // Wait 2 minutes then check status
-            _logger.LogInformation("⏳ Waiting 2 minutes before checking statuses...");
-            await Task.Delay(TimeSpan.FromMinutes(2));
-
-            foreach (var (pdfPath, jobId) in jobMap)
-            {
-                try
-                {
-                    var statusResponse = await client.GetAsync($"{apiUrl}status/{jobId}");
-                    var statusText = await statusResponse.Content.ReadAsStringAsync();
-                    var statusObj = JsonConvert.DeserializeObject<JobStatusResponse>(statusText);
-
-                    var pdfName = Path.GetFileName(pdfPath);
-                    var record = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
-                    Models.Entities.Legislation existing = await oldDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
-
-                    if (record != null && statusObj.Status == "completed")
-                    {
-                        record.JobStatus = statusObj.Status;
-                        var newRecord = new Models.NewEntities.Legislation
+                            if (existing.JobStatus == "completed")
+                            {
+                                _logger.LogInformation("Skipping {Pdf}, already completed.", pdfName);
+                                continue;
+                            }
+                            else
+                            {
+                                // Job exists but still pending/in-process — only call status API
+                                jobMap[pdfPath] = existing.JobId;
+                                _logger.LogInformation("Job already submitted for {Pdf}, will check status.", pdfName);
+                                continue;
+                            }
+                        }
+                        else
                         {
-                            LegislationId = existing.LegislationId,
-                            Title = statusObj.Result.Title,
-                            StatusId = existing.StatusId,
-                            DateOfIssuance = existing.DateOfIssuance,
-                            HijriDate = existing.HijriDate,
-                            IssuingAuthorityId = existing.IssuingAuthorityId,
-                            LegislationTypeId = existing.LegislationTypeId,
-                            OfficialGazetteNumber = existing.OfficialGazetteNumber,
-                            SourceFileName = statusObj.Result.PdfFileName,
-                            PdfUrl = existing.PdfUrl,
-                            CreatedBy = "system",
-                            CreatedAt = statusObj.CreatedAt,
-                            SourceId = existing.SourceId,
-                            LanguageId = existing.LanguageId,
-                            Aisummary = existing.Aisummary,
-                            DisplayName = existing.DisplayName,
-                            Json = statusText,
-                            CategoryId = existing.CategoryId,
-                            SubCategoryId = existing.SubCategoryId,
-                            Embeddings = existing.Embeddings,
-                            Active = true,
-                            Number = existing.Number,
-                            Version = existing.Version,
-                            ParentLegislationId = existing.ParentLegislationId,
-                            JobId = jobId,
-                            JobStatus = statusObj.Status,
-                        };
-                        newDb.Legislations.Update(newRecord);
-                        await newDb.SaveChangesAsync();
+                            using var content = new MultipartFormDataContent();
+                            using var fileStream = File.OpenRead(pdfPath);
+                            var fileContent = new StreamContent(fileStream);
+                            fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+                            content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
+
+                            var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
+                            var result = await response.Content.ReadAsStringAsync();
+
+                            if (!response.IsSuccessStatusCode)
+                                continue;
+
+                            var jobResponse = JsonConvert.DeserializeObject<ExtractJobResponse>(result);
+                            if (jobResponse == null)
+                                continue;
+
+                            if (existing == null)
+                            {
+                                existing = new Models.NewEntities.Legislation
+                                {
+                                    LegislationId = oldRecord.LegislationId,
+                                    Title = oldRecord.Title,
+                                    StatusId = oldRecord.StatusId,
+                                    DateOfIssuance = oldRecord.DateOfIssuance,
+                                    HijriDate = oldRecord.HijriDate,
+                                    IssuingAuthorityId = oldRecord.IssuingAuthorityId,
+                                    LegislationTypeId = oldRecord.LegislationTypeId,
+                                    OfficialGazetteNumber = oldRecord.OfficialGazetteNumber,
+                                    SourceFileName = pdfName,
+                                    PdfUrl = oldRecord.PdfUrl,
+                                    CreatedBy = "system",
+                                    CreatedAt = oldRecord.CreatedAt,
+                                    SourceId = oldRecord.SourceId,
+                                    LanguageId = oldRecord.LanguageId,
+                                    Aisummary = oldRecord.Aisummary,
+                                    DisplayName = oldRecord.DisplayName,
+                                    Json = oldRecord.Json,
+                                    CategoryId = oldRecord.CategoryId,
+                                    SubCategoryId = oldRecord.SubCategoryId,
+                                    Embeddings = oldRecord.Embeddings,
+                                    Active = true,
+                                    Number = oldRecord.Number,
+                                    Version = oldRecord.Version,
+                                    ParentLegislationId = oldRecord.ParentLegislationId,
+                                    JobId = jobResponse.JobId,
+                                    JobStatus = jobResponse.Status
+                                };
+                                await using var transaction = await newDb.Database.BeginTransactionAsync();
+
+                                await newDb.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations ON");
+
+                                await newDb.Legislations.AddAsync(existing);
+                                await newDb.SaveChangesAsync();
+
+                                await newDb.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations OFF");
+
+                                await transaction.CommitAsync();
+                            }
+                            else
+                            {
+                                existing.JobId = jobResponse.JobId;
+                                existing.JobStatus = jobResponse.Status;
+                                newDb.Legislations.Update(existing);
+                                await newDb.SaveChangesAsync();
+                            }
+
+                            //await newDb.SaveChangesAsync();
+                            //await newDb.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations OFF");
+                            jobMap[pdfPath] = jobResponse.JobId;
+
+
+                            _logger.LogInformation("Submitted Job {JobId} for {Pdf}", jobResponse.JobId, pdfName);
+                        }
                     }
-                    else if (statusObj.Status != "completed")
+                    catch (Exception ex)
                     {
-                        await Task.Delay(TimeSpan.FromMinutes(2));
+                        _logger.LogError(ex, "Error submitting job for {Pdf}", pdfPath);
                     }
+                }
+
+                // Wait 2 minutes then check status
+                _logger.LogInformation("⏳ Waiting 2 minutes before checking statuses...");
+                await Task.Delay(TimeSpan.FromMinutes(2));
+
+                foreach (var (pdfPath, jobId) in jobMap)
+                {
+                    try
+                    {
+                        var statusResponse = await client.GetAsync($"{apiUrl}status/{jobId}");
+                        var statusText = await statusResponse.Content.ReadAsStringAsync();
+                        var statusObj = JsonConvert.DeserializeObject<JobStatusResponse>(statusText);
+
+                        var pdfName = Path.GetFileName(pdfPath);
+                        var record = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+                        Models.Entities.Legislation existing = await oldDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+
+                        if (record != null && statusObj.Status == "completed")
+                        {
+                            record.JobStatus = statusObj.Status;
+                            var newRecord = new Models.NewEntities.Legislation
+                            {
+                                JobId = jobId,
+                                JobStatus = statusObj.Status,
+                            };
+                            newDb.Legislations.Update(newRecord);
+                            await newDb.SaveChangesAsync();
+                        }
+                        else if (statusObj.Status != "completed")
+                        {
+                            await Task.Delay(TimeSpan.FromMinutes(2));
+                        }
 
                         _logger.LogInformation("Checked status for {Pdf} (Job {JobId}): {Status}", pdfName, jobId, statusObj?.Status);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error checking status for job {JobId}", jobId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error checking status for job {JobId}", jobId);
+                    }
                 }
             }
+            catch (SqlException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+
+                throw;
+            }
+            //public async Task ReprocessLegislationAsync2(string pdfFolderPath, string language)
+            //{
+            //    const int batchSize = 10;
+            //    var allPdfPaths = new List<string>();
+
+            //    foreach (var folder in Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly))
+            //    {
+            //        var folderName = Path.GetFileName(folder) ?? string.Empty;
+            //        try
+            //        {
+            //            var pdfFiles = Directory.GetFiles(folder, "*.pdf", SearchOption.TopDirectoryOnly);
+            //            if (pdfFiles.Length == 0)
+            //            {
+            //                _logger.LogWarning("⚠️ No PDFs found in folder: {Folder}", folder);
+            //                continue;
+            //            }
+
+            //            string selectedPdf = pdfFiles.Length == 1
+            //                ? pdfFiles[0]
+            //                : pdfFiles
+            //                    .Select(p => new { Path = p, NameNoExt = Path.GetFileNameWithoutExtension(p) })
+            //                    .FirstOrDefault(x => string.Equals(
+            //                        x.NameNoExt?.Trim(),
+            //                        folderName.Trim(),
+            //                        StringComparison.OrdinalIgnoreCase))?.Path
+            //                    ?? pdfFiles.OrderBy(p => p).First();
+
+            //            allPdfPaths.Add(selectedPdf);
+            //            _logger.LogInformation("Selected PDF: {Pdf} (folder: {Folder})", selectedPdf, folder);
+            //        }
+            //        catch (Exception ex)
+            //        {
+            //            _logger.LogError(ex, " Error scanning folder: {Folder}", folder);
+            //        }
+            //    }
+
+            //    if (!allPdfPaths.Any())
+            //    {
+            //        _logger.LogWarning("No PDF files found to process.");
+            //        return;
+            //    }
+
+            //    _logger.LogInformation("Total PDFs to process: {Count}", allPdfPaths.Count);
+
+            //    using var client = _httpClientFactory.CreateClient();
+            //    var apiUrl = _configuration["AIService:BaseApiUrl"]; // e.g., "https://localhost:5001/api/ai/"
+
+            //    for (int i = 0; i < allPdfPaths.Count; i += batchSize)
+            //    {
+            //        var batch = allPdfPaths.Skip(i).Take(batchSize).ToList();
+            //        var jobMap = new Dictionary<string, string>(); // pdfPath → jobId
+
+            //        // 1️⃣ Submit extract jobs
+            //        foreach (var pdfPath in batch)
+            //        {
+            //            try
+            //            {
+            //                using var content = new MultipartFormDataContent();
+            //                using var fileStream = File.OpenRead(pdfPath);
+            //                var fileContent = new StreamContent(fileStream);
+            //                fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+            //                content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
+
+            //                var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
+            //                var result = await response.Content.ReadAsStringAsync();
+
+            //                if (!response.IsSuccessStatusCode)
+            //                {
+            //                    _logger.LogError("❌ API failed for {Pdf} with status {Status} and message: {Result}", pdfPath, response.StatusCode, result);
+            //                    continue;
+            //                }
+
+            //                var jobResponse = JsonConvert.DeserializeObject<ExtractJobResponse>(result);
+            //                jobMap[pdfPath] = jobResponse?.JobId ?? string.Empty;
+            //                _logger.LogInformation("✅ Submitted job {JobId} for {Pdf}", jobResponse?.JobId, Path.GetFileName(pdfPath));
+            //            }
+            //            catch (Exception ex)
+            //            {
+            //                _logger.LogError(ex, "❌ Error submitting extract job for {Pdf}", pdfPath);
+            //            }
+            //        }
+
+            //        // 2️⃣ Wait 2 minutes before checking
+            //        _logger.LogInformation("⏳ Waiting 2 minutes before checking job statuses...");
+            //        await Task.Delay(TimeSpan.FromMinutes(2));
+
+            //        // 3️⃣ Check statuses
+            //        foreach (var (pdfPath, jobId) in jobMap)
+            //        {
+            //            try
+            //            {
+            //                if (string.IsNullOrEmpty(jobId))
+            //                    continue;
+
+            //                var statusResponse = await client.GetAsync($"{apiUrl}status/{jobId}");
+            //                var statusText = await statusResponse.Content.ReadAsStringAsync();
+            //                var status = JsonConvert.DeserializeObject<JobStatusResponse>(statusText)?.Status;
+
+            //                if (status?.Equals("completed", StringComparison.OrdinalIgnoreCase) == true)
+            //                    _logger.LogInformation("✅ {Pdf} processed successfully (Job {JobId})", Path.GetFileName(pdfPath), jobId);
+            //                else
+            //                    _logger.LogWarning("⚠️ {Pdf} not yet complete (Status: {Status})", Path.GetFileName(pdfPath), status);
+            //            }
+            //            catch (Exception ex)
+            //            {
+            //                _logger.LogError(ex, "❌ Error checking job status for {Pdf}", pdfPath);
+            //            }
+            //        }
+            //    }
+
+            //    _logger.LogInformation("🎉 Reprocessing completed for all PDFs.");
+            //}
         }
-        //public async Task ReprocessLegislationAsync2(string pdfFolderPath, string language)
-        //{
-        //    const int batchSize = 10;
-        //    var allPdfPaths = new List<string>();
-
-        //    foreach (var folder in Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly))
-        //    {
-        //        var folderName = Path.GetFileName(folder) ?? string.Empty;
-        //        try
-        //        {
-        //            var pdfFiles = Directory.GetFiles(folder, "*.pdf", SearchOption.TopDirectoryOnly);
-        //            if (pdfFiles.Length == 0)
-        //            {
-        //                _logger.LogWarning("⚠️ No PDFs found in folder: {Folder}", folder);
-        //                continue;
-        //            }
-
-        //            string selectedPdf = pdfFiles.Length == 1
-        //                ? pdfFiles[0]
-        //                : pdfFiles
-        //                    .Select(p => new { Path = p, NameNoExt = Path.GetFileNameWithoutExtension(p) })
-        //                    .FirstOrDefault(x => string.Equals(
-        //                        x.NameNoExt?.Trim(),
-        //                        folderName.Trim(),
-        //                        StringComparison.OrdinalIgnoreCase))?.Path
-        //                    ?? pdfFiles.OrderBy(p => p).First();
-
-        //            allPdfPaths.Add(selectedPdf);
-        //            _logger.LogInformation("Selected PDF: {Pdf} (folder: {Folder})", selectedPdf, folder);
-        //        }
-        //        catch (Exception ex)
-        //        {
-        //            _logger.LogError(ex, " Error scanning folder: {Folder}", folder);
-        //        }
-        //    }
-
-        //    if (!allPdfPaths.Any())
-        //    {
-        //        _logger.LogWarning("No PDF files found to process.");
-        //        return;
-        //    }
-
-        //    _logger.LogInformation("Total PDFs to process: {Count}", allPdfPaths.Count);
-
-        //    using var client = _httpClientFactory.CreateClient();
-        //    var apiUrl = _configuration["AIService:BaseApiUrl"]; // e.g., "https://localhost:5001/api/ai/"
-
-        //    for (int i = 0; i < allPdfPaths.Count; i += batchSize)
-        //    {
-        //        var batch = allPdfPaths.Skip(i).Take(batchSize).ToList();
-        //        var jobMap = new Dictionary<string, string>(); // pdfPath → jobId
-
-        //        // 1️⃣ Submit extract jobs
-        //        foreach (var pdfPath in batch)
-        //        {
-        //            try
-        //            {
-        //                using var content = new MultipartFormDataContent();
-        //                using var fileStream = File.OpenRead(pdfPath);
-        //                var fileContent = new StreamContent(fileStream);
-        //                fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
-        //                content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
-
-        //                var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
-        //                var result = await response.Content.ReadAsStringAsync();
-
-        //                if (!response.IsSuccessStatusCode)
-        //                {
-        //                    _logger.LogError("❌ API failed for {Pdf} with status {Status} and message: {Result}", pdfPath, response.StatusCode, result);
-        //                    continue;
-        //                }
-
-        //                var jobResponse = JsonConvert.DeserializeObject<ExtractJobResponse>(result);
-        //                jobMap[pdfPath] = jobResponse?.JobId ?? string.Empty;
-        //                _logger.LogInformation("✅ Submitted job {JobId} for {Pdf}", jobResponse?.JobId, Path.GetFileName(pdfPath));
-        //            }
-        //            catch (Exception ex)
-        //            {
-        //                _logger.LogError(ex, "❌ Error submitting extract job for {Pdf}", pdfPath);
-        //            }
-        //        }
-
-        //        // 2️⃣ Wait 2 minutes before checking
-        //        _logger.LogInformation("⏳ Waiting 2 minutes before checking job statuses...");
-        //        await Task.Delay(TimeSpan.FromMinutes(2));
-
-        //        // 3️⃣ Check statuses
-        //        foreach (var (pdfPath, jobId) in jobMap)
-        //        {
-        //            try
-        //            {
-        //                if (string.IsNullOrEmpty(jobId))
-        //                    continue;
-
-        //                var statusResponse = await client.GetAsync($"{apiUrl}status/{jobId}");
-        //                var statusText = await statusResponse.Content.ReadAsStringAsync();
-        //                var status = JsonConvert.DeserializeObject<JobStatusResponse>(statusText)?.Status;
-
-        //                if (status?.Equals("completed", StringComparison.OrdinalIgnoreCase) == true)
-        //                    _logger.LogInformation("✅ {Pdf} processed successfully (Job {JobId})", Path.GetFileName(pdfPath), jobId);
-        //                else
-        //                    _logger.LogWarning("⚠️ {Pdf} not yet complete (Status: {Status})", Path.GetFileName(pdfPath), status);
-        //            }
-        //            catch (Exception ex)
-        //            {
-        //                _logger.LogError(ex, "❌ Error checking job status for {Pdf}", pdfPath);
-        //            }
-        //        }
-        //    }
-
-        //    _logger.LogInformation("🎉 Reprocessing completed for all PDFs.");
-        //}
     }
 }

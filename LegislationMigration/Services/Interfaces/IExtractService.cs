@@ -1,4 +1,5 @@
-﻿using System;
+﻿using LegislationMigration.Models.DTOs;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -8,6 +9,6 @@ namespace LegislationMigration.Services.Interfaces
 {
     public interface IExtractService
     {
-        Task<string> SubmitExtractJobAsync(string pdfPath, string language);
+        Task<ExtractJobResponse> SubmitExtractJobAsync(string pdfPath, string language);
     }
 }

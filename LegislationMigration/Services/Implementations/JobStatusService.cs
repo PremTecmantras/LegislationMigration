@@ -1,6 +1,7 @@
 ﻿using LegislationMigration.Models.DTOs;
 using LegislationMigration.Services.Interfaces;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
@@ -12,24 +13,35 @@ namespace LegislationMigration.Services.Implementations
 {
     public class JobStatusService : IJobStatusService
     {
-        private readonly HttpClient _client;
+        private readonly IHttpClientFactory _factory;
         private readonly IConfiguration _config;
-        public JobStatusService(IHttpClientFactory factory, IConfiguration config)
+        private readonly ILogger<JobStatusService> _logger;
+        public JobStatusService(IHttpClientFactory factory, IConfiguration config, ILogger<JobStatusService> logger)
         {
-            _client = factory.CreateClient();
+            _factory = factory;
             _config = config;
+            _logger = logger;
         }
+
         public async Task<string> GetJobStatusAsync(string jobId)
         {
-            var baseUrl = _config["AIService:ExtractionUrl"];
-            var statusUrl = $"{baseUrl}status/{jobId}";
+            try
+            {
+                using var client = _factory.CreateClient();
+                var baseUrl = _config["AIService:ExtractionUrl"];
+                var response = await client.GetAsync($"{baseUrl}status/{jobId}");
+                response.EnsureSuccessStatusCode();
 
-            var response = await _client.GetAsync(statusUrl);
-            response.EnsureSuccessStatusCode();
+                var json = await response.Content.ReadAsStringAsync();
+                var status = JsonConvert.DeserializeObject<JobStatusResponse>(json);
 
-            var json = await response.Content.ReadAsStringAsync();
-            var status = JsonConvert.DeserializeObject<JobStatusResponse>(json);
-            return status.Status;
+                return status?.Status;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error fetching status for JobId {JobId}", jobId);
+                return null;
+            }
         }
     }
 }

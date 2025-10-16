@@ -37,12 +37,23 @@ namespace LegislationMigration.Services.Implementations
             _newFactory = newDb ?? throw new ArgumentNullException(nameof(newDb));
         }
 
-        public async Task ReprocessLegislationAsync(string pdfFolderPath, string language)
+        public async Task ReprocessLegislationAsync(string pdfFolderPath)
         {
+            var allFolders = Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly).ToList();
+            if (!allFolders.Any())
+            {
+                _logger.LogWarning("No folders found in {Path}", pdfFolderPath);
+                return;
+            }
+
+            _logger.LogInformation("Total folders to process: {Count}", allFolders.Count);
+
+            using var oldDb = await _oldFactory.CreateDbContextAsync();
+
             const int batchSize = 10;
 
             // Enumerate all top-level directories, but process in chunks of 10
-            var allFolders = Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly).ToList();
+            //var allFolders = Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly).ToList();
 
             if (!allFolders.Any())
             {
@@ -58,7 +69,7 @@ namespace LegislationMigration.Services.Implementations
                 var folderBatch = allFolders.Skip(i).Take(batchSize).ToList();
                 _logger.LogInformation("Processing folder batch {BatchNum} ({Count} folders)", (i / batchSize) + 1, folderBatch.Count);
 
-                var pdfBatch = new List<string>();
+                var pdfBatch = new List<(string PdfPath, string PdfName)>();
 
                 foreach (var folder in folderBatch)
                 {
@@ -79,18 +90,32 @@ namespace LegislationMigration.Services.Implementations
                                     StringComparison.OrdinalIgnoreCase))?.Path
                                 ?? pdfFiles.OrderBy(p => p).First();
 
-                        pdfBatch.Add(selectedPdf);
-                        _logger.LogInformation("Selected PDF: {Pdf}", selectedPdf);
+                        var pdfName = Path.GetFileName(selectedPdf);
+
+                        pdfBatch.Add((selectedPdf, pdfName));
                     }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Error reading folder {Folder}", folder);
                     }
                 }
-                await ProcessPdfBatchAsync(pdfBatch, language);
+                var pdfNames = pdfBatch.Select(p => p.PdfName).ToList();
+                var matchedOldRecords = await oldDb.Legislations
+                    .Where(l => pdfNames.Contains(l.SourceFileName))
+                    .ToListAsync();
 
+                var filteredPdfBatch = pdfBatch
+                    .Where(p => matchedOldRecords.Any(r => r.SourceFileName == p.PdfName))
+                    .Select(p => p.PdfPath)
+                    .ToList();
+
+                if (!filteredPdfBatch.Any())
+                {
+                    _logger.LogInformation("No matching old records found for this batch.");
+                    continue;
+                }
                 // 🔹 STEP 2: Process the selected PDFs in this batch
-                await ProcessPdfBatchAsync(pdfBatch, language);
+                await ProcessPdfBatchAsync(filteredPdfBatch);
 
                 _logger.LogInformation("✅ Finished processing batch {BatchNum}.", (i / batchSize) + 1);
             }
@@ -98,7 +123,7 @@ namespace LegislationMigration.Services.Implementations
             _logger.LogInformation("🎉 All folder batches processed successfully.");
         }
 
-        public async Task ProcessPdfBatchAsync(List<string> pdfBatch, string language)
+        public async Task ProcessPdfBatchAsync(List<string> pdfBatch)
         {
             try
             {
@@ -132,7 +157,12 @@ namespace LegislationMigration.Services.Implementations
                         }
 
                         ExtractJobResponse? jobResponse = null;
+                        string language = "en";
 
+                        if (oldRecord.LanguageId == 1)
+                            language = "en";
+                        else if (oldRecord.LanguageId == 2)
+                            language = "ar";
 
                         if (existing == null)
                         {

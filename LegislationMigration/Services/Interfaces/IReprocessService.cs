@@ -8,7 +8,7 @@ namespace LegislationMigration.Services.Interfaces
 {
     public interface IReprocessService
     {
-        Task ReprocessLegislationAsync(string pdfFolderPath, string language);
-        Task ProcessPdfBatchAsync(List<string> pdfBatch, string language);
+        Task ReprocessLegislationAsync(string pdfFolderPath);
+        Task ProcessPdfBatchAsync(List<string> pdfBatch);
     }
 }

@@ -36,6 +36,8 @@ namespace LegislationMigration.Services.Implementations
                 var fileContent = new StreamContent(fileStream);
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
                 content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
+                
+                
 
                 var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
                 var result = await response.Content.ReadAsStringAsync();

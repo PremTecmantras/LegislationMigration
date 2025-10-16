@@ -48,10 +48,7 @@ internal class Program
         //Console.WriteLine("Enter PDF folder path:");
         var folderPath = "E:\\Prem\\pdfs_tables (2)";
 
-        Console.WriteLine("Enter language (en/ar):");
-        var language = Console.ReadLine() ?? "en";
-
-        await reprocessor.ReprocessLegislationAsync(folderPath, language);
+        await reprocessor.ReprocessLegislationAsync(folderPath);
 
         Console.WriteLine("✅ Reprocessing Completed.");
     }

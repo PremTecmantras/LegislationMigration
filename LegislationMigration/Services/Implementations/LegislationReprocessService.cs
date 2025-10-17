@@ -19,22 +19,19 @@ namespace LegislationMigration.Services.Implementations
         private readonly IJobStatusService _jobStatusService;
         private readonly ILogger<LegislationReprocessService> _logger;
 
-        private readonly IDbContextFactory<MyDbContext> _oldFactory;
-        private readonly IDbContextFactory<NewDbContext> _newFactory;
+        private readonly IDbContextFactory<NewDbContext> _Factory;
 
         public LegislationReprocessService(
         IExtractService extractService,
         IJobStatusService statusService,
         ILogger<LegislationReprocessService> logger,
-        IDbContextFactory<MyDbContext> oldDb,
         IDbContextFactory<NewDbContext> newDb)
         {
             _extractService = extractService ?? throw new ArgumentNullException(nameof(extractService));
             _jobStatusService = statusService ?? throw new ArgumentNullException(nameof(statusService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
            
-            _oldFactory = oldDb ?? throw new ArgumentNullException(nameof(oldDb));
-            _newFactory = newDb ?? throw new ArgumentNullException(nameof(newDb));
+            _Factory = newDb ?? throw new ArgumentNullException(nameof(newDb));
         }
 
         public async Task ReprocessLegislationAsync(string pdfFolderPath)
@@ -48,7 +45,7 @@ namespace LegislationMigration.Services.Implementations
 
             _logger.LogInformation("Total folders to process: {Count}", allFolders.Count);
 
-            using var oldDb = await _oldFactory.CreateDbContextAsync();
+            using var Db = await _Factory.CreateDbContextAsync();
 
             const int batchSize = 10;
 
@@ -100,12 +97,12 @@ namespace LegislationMigration.Services.Implementations
                     }
                 }
                 var pdfNames = pdfBatch.Select(p => p.PdfName).ToList();
-                var matchedOldRecords = await oldDb.Legislations
-                    .Where(l => pdfNames.Contains(l.SourceFileName))
+                var matchedRecords = await Db.Legislations
+                    .Where(l => pdfNames.Contains(l.SourceFileName) && (l.JobStatus == null || l.JobStatus != "completed"))
                     .ToListAsync();
 
                 var filteredPdfBatch = pdfBatch
-                    .Where(p => matchedOldRecords.Any(r => r.SourceFileName == p.PdfName))
+                    .Where(p => matchedRecords.Any(r => r.SourceFileName == p.PdfName))
                     .Select(p => p.PdfPath)
                     .ToList();
 
@@ -127,8 +124,8 @@ namespace LegislationMigration.Services.Implementations
         {
             try
             {
-                using var oldDb = await _oldFactory.CreateDbContextAsync();
-                using var newDb = await _newFactory.CreateDbContextAsync();
+                //using var oldDb = await _oldFactory.CreateDbContextAsync();
+                using var Db = await _Factory.CreateDbContextAsync();
 
                 var jobMap = new Dictionary<string, string>(); // pdf → jobId
 
@@ -139,73 +136,72 @@ namespace LegislationMigration.Services.Implementations
                     {
                         string pdfName = Path.GetFileName(pdfPath);
 
-                        // Check in old DB
-                        var oldRecord = await oldDb.Legislations
-                            .Where(l => l.SourceFileName == pdfName)
-                            .FirstOrDefaultAsync();
-
-                        if (oldRecord == null)
-                            continue;
+                        //// Check in old DB
+                        //var oldRecord = await Db.Legislations
+                        //    .Where(l => l.SourceFileName == pdfName)
+                        //    .FirstOrDefaultAsync();
 
                         // Check if already successful
-                        var existing = await newDb.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+                        var existing = await Db.Legislations.FirstOrDefaultAsync(x => x.JobStatus != "completed");
 
-                        if (existing != null && existing.JobStatus == "completed")
+                        if (existing == null)
                         {
                             _logger.LogInformation("Skipping {Pdf}, already completed.", pdfName);
                             continue;
                         }
 
-                        ExtractJobResponse? jobResponse = null;
+                        JobStatusResponse? jobResponse = null;
                         string language = "en";
 
-                        if (oldRecord.LanguageId == 1)
+                        if (existing.LanguageId == 1)
                             language = "en";
-                        else if (oldRecord.LanguageId == 2)
+                        else if (existing.LanguageId == 2)
                             language = "ar";
 
-                        if (existing == null)
+                        if (existing != null)
                         {
-                            jobResponse = await _extractService.SubmitExtractJobAsync(pdfPath, language);
-                            if (jobResponse == null) continue;
+                            var Response = await _extractService.SubmitExtractJobAsync(pdfPath, language);
 
-                            existing = new Models.NewEntities.Legislation
-                            {
-                                LegislationId = oldRecord.LegislationId,
-                                Title = oldRecord.Title,
-                                StatusId = oldRecord.StatusId,
-                                DateOfIssuance = oldRecord.DateOfIssuance,
-                                HijriDate = oldRecord.HijriDate,
-                                IssuingAuthorityId = oldRecord.IssuingAuthorityId,
-                                LegislationTypeId = oldRecord.LegislationTypeId,
-                                OfficialGazetteNumber = oldRecord.OfficialGazetteNumber,
-                                SourceFileName = pdfName,
-                                PdfUrl = oldRecord.PdfUrl,
-                                CreatedBy = "system",
-                                CreatedAt = oldRecord.CreatedAt,
-                                SourceId = oldRecord.SourceId,
-                                LanguageId = oldRecord.LanguageId,
-                                Aisummary = oldRecord.Aisummary,
-                                DisplayName = oldRecord.DisplayName,
-                                Json = oldRecord.Json,
-                                CategoryId = oldRecord.CategoryId,
-                                SubCategoryId = oldRecord.SubCategoryId,
-                                Embeddings = oldRecord.Embeddings,
-                                Active = true,
-                                Number = oldRecord.Number,
-                                Version = oldRecord.Version,
-                                ParentLegislationId = oldRecord.ParentLegislationId,
-                                JobId = jobResponse.JobId,
-                                JobStatus = jobResponse.Status
-                            };
-                            await using var transaction = await newDb.Database.BeginTransactionAsync();
+                            jobResponse.Status = Response.Status;
+                            jobResponse.JobId = Response.JobId;
 
-                            await newDb.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations ON");
+                            //existing = new Models.NewEntities.Legislation
+                            //{
+                            //    LegislationId = oldRecord.LegislationId,
+                            //    Title = oldRecord.Title,
+                            //    StatusId = oldRecord.StatusId,
+                            //    DateOfIssuance = oldRecord.DateOfIssuance,
+                            //    HijriDate = oldRecord.HijriDate,
+                            //    IssuingAuthorityId = oldRecord.IssuingAuthorityId,
+                            //    LegislationTypeId = oldRecord.LegislationTypeId,
+                            //    OfficialGazetteNumber = oldRecord.OfficialGazetteNumber,
+                            //    SourceFileName = pdfName,
+                            //    PdfUrl = oldRecord.PdfUrl,
+                            //    CreatedBy = "system",
+                            //    CreatedAt = oldRecord.CreatedAt,
+                            //    SourceId = oldRecord.SourceId,
+                            //    LanguageId = oldRecord.LanguageId,
+                            //    Aisummary = oldRecord.Aisummary,
+                            //    DisplayName = oldRecord.DisplayName,
+                            //    Json = oldRecord.Json,
+                            //    CategoryId = oldRecord.CategoryId,
+                            //    SubCategoryId = oldRecord.SubCategoryId,
+                            //    Embeddings = oldRecord.Embeddings,
+                            //    Active = true,
+                            //    Number = oldRecord.Number,
+                            //    Version = oldRecord.Version,
+                            //    ParentLegislationId = oldRecord.ParentLegislationId,
+                            //    JobId = jobResponse.JobId,
+                            //    JobStatus = jobResponse.Status
+                            //};
+                            await using var transaction = await Db.Database.BeginTransactionAsync();
 
-                            await newDb.Legislations.AddAsync(existing);
-                            await newDb.SaveChangesAsync();
+                            await Db.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations ON");
 
-                            await newDb.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations OFF");
+                            await Db.Legislations.AddAsync(existing);
+                            await Db.SaveChangesAsync();
+
+                            await Db.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations OFF");
 
                             await transaction.CommitAsync();
                         }
@@ -219,8 +215,8 @@ namespace LegislationMigration.Services.Implementations
                             if (status == "completed")
                             {
                                 existing.JobStatus = status;
-                                newDb.Legislations.Update(existing);
-                                await newDb.SaveChangesAsync();
+                                Db.Legislations.Update(existing);
+                                await Db.SaveChangesAsync();
                                 _logger.LogInformation("Job completed for {Pdf} (JobId {JobId})", pdfName, jobId);
                                 break;
                             }

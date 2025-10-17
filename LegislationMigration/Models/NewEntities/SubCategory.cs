@@ -29,7 +29,11 @@ public partial class SubCategory
 
     public virtual Category Category { get; set; } = null!;
 
+    public virtual ICollection<DraftLegislation> DraftLegislations { get; set; } = new List<DraftLegislation>();
+
     public virtual Language Language { get; set; } = null!;
+
+    public virtual ICollection<LegislationSilver> LegislationSilvers { get; set; } = new List<LegislationSilver>();
 
     public virtual ICollection<Legislation> Legislations { get; set; } = new List<Legislation>();
 

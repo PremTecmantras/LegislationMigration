@@ -1,12 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 
 namespace LegislationMigration.Models.NewEntities;
 
 public partial class Legislation
 {
-    [Key]
     public long LegislationId { get; set; }
 
     public string Title { get; set; } = null!;
@@ -63,15 +61,45 @@ public partial class Legislation
 
     public string? JobStatus { get; set; }
 
+    public virtual ICollection<AmendedLegislation> AmendedLegislations { get; set; } = new List<AmendedLegislation>();
+
+    public virtual ICollection<Appendix> Appendices { get; set; } = new List<Appendix>();
+
     public virtual ICollection<Article> Articles { get; set; } = new List<Article>();
 
     public virtual Category? Category { get; set; }
+
+    public virtual ICollection<Comment> Comments { get; set; } = new List<Comment>();
+
+    public virtual ICollection<DlparabicDatum> DlparabicData { get; set; } = new List<DlparabicDatum>();
+
+    public virtual ICollection<DlpenglishDatum> DlpenglishData { get; set; } = new List<DlpenglishDatum>();
+
+    public virtual ICollection<ExtractedImage> ExtractedImages { get; set; } = new List<ExtractedImage>();
+
+    public virtual ICollection<ExtractedTable> ExtractedTables { get; set; } = new List<ExtractedTable>();
+
+    public virtual ICollection<FailedAmendedLegislation> FailedAmendedLegislations { get; set; } = new List<FailedAmendedLegislation>();
+
+    public virtual ICollection<FailedLegislationRelation> FailedLegislationRelations { get; set; } = new List<FailedLegislationRelation>();
 
     public virtual IssuingAuthorityType IssuingAuthority { get; set; } = null!;
 
     public virtual Language Language { get; set; } = null!;
 
+    public virtual ICollection<LegislationConflict> LegislationConflicts { get; set; } = new List<LegislationConflict>();
+
+    public virtual ICollection<LegislationMapping> LegislationMappings { get; set; } = new List<LegislationMapping>();
+
     public virtual LegislationType LegislationType { get; set; } = null!;
+
+    public virtual ICollection<LegislationVersion> LegislationVersions { get; set; } = new List<LegislationVersion>();
+
+    public virtual ICollection<OwnershipInvolvement> OwnershipInvolvements { get; set; } = new List<OwnershipInvolvement>();
+
+    public virtual ICollection<ReferencedLegislation> ReferencedLegislationLegislations { get; set; } = new List<ReferencedLegislation>();
+
+    public virtual ICollection<ReferencedLegislation> ReferencedLegislationReferencedLegislationNavigations { get; set; } = new List<ReferencedLegislation>();
 
     public virtual Source? Source { get; set; }
 

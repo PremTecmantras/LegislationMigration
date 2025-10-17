@@ -13,5 +13,9 @@ public partial class LegislationStatusType
 
     public string? StatusNameAr { get; set; }
 
+    public virtual ICollection<LegislationSilver> LegislationSilvers { get; set; } = new List<LegislationSilver>();
+
     public virtual ICollection<Legislation> Legislations { get; set; } = new List<Legislation>();
+
+    public virtual ICollection<LegislationsDataSourceRefTable> LegislationsDataSourceRefTables { get; set; } = new List<LegislationsDataSourceRefTable>();
 }

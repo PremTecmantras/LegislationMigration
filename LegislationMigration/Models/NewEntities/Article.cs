@@ -33,5 +33,17 @@ public partial class Article
 
     public string? ArticleBody { get; set; }
 
+    public virtual ICollection<AmendedLegislation> AmendedLegislations { get; set; } = new List<AmendedLegislation>();
+
+    public virtual ICollection<Comment> Comments { get; set; } = new List<Comment>();
+
+    public virtual ICollection<Domain> Domains { get; set; } = new List<Domain>();
+
+    public virtual ICollection<ExtractedImage> ExtractedImages { get; set; } = new List<ExtractedImage>();
+
+    public virtual ICollection<ExtractedTable> ExtractedTables { get; set; } = new List<ExtractedTable>();
+
     public virtual Legislation Legislation { get; set; } = null!;
+
+    public virtual ICollection<LegislationConflict> LegislationConflicts { get; set; } = new List<LegislationConflict>();
 }

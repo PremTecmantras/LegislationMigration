@@ -29,7 +29,11 @@ public partial class Category
 
     public int LanguageId { get; set; }
 
+    public virtual ICollection<DraftLegislation> DraftLegislations { get; set; } = new List<DraftLegislation>();
+
     public virtual Language Language { get; set; } = null!;
+
+    public virtual ICollection<LegislationSilver> LegislationSilvers { get; set; } = new List<LegislationSilver>();
 
     public virtual ICollection<Legislation> Legislations { get; set; } = new List<Legislation>();
 

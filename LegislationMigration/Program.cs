@@ -25,9 +25,6 @@ internal class Program
                 services.AddDbContextFactory<NewDbContext>(options =>
                     options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")));
 
-                services.AddDbContextFactory<MyDbContext>(options =>
-                    options.UseSqlServer(configuration.GetConnectionString("OldConnection")));
-
                 // Add HTTP client
                 services.AddHttpClient();
 

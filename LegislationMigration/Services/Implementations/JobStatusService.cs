@@ -23,7 +23,7 @@ namespace LegislationMigration.Services.Implementations
             _logger = logger;
         }
 
-        public async Task<string> GetJobStatusAsync(string jobId)
+        public async Task<JobStatusResponse> GetJobStatusAsync(string jobId)
         {
             try
             {
@@ -35,7 +35,7 @@ namespace LegislationMigration.Services.Implementations
                 var json = await response.Content.ReadAsStringAsync();
                 var status = JsonConvert.DeserializeObject<JobStatusResponse>(json);
 
-                return status?.Status;
+                return status;
             }
             catch (Exception ex)
             {

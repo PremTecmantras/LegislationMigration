@@ -1,15 +1,8 @@
 ﻿using LegislationMigration.Data;
-using LegislationMigration.Models.DTOs;
-using LegislationMigration.Models.Entities;
-using LegislationMigration.Models.NewEntities;
-using LegislationMigration.Repositories.Interfaces;
 using LegislationMigration.Services.Interfaces;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json;
-using System.Net.Http.Headers;
 
 namespace LegislationMigration.Services.Implementations
 {
@@ -47,182 +40,131 @@ namespace LegislationMigration.Services.Implementations
 
             using var Db = await _Factory.CreateDbContextAsync();
 
-            const int batchSize = 10;
+            var allPdfFiles = new List<(string PdfPath, string PdfName)>();
 
-            // Enumerate all top-level directories, but process in chunks of 10
-            //var allFolders = Directory.EnumerateDirectories(pdfFolderPath, "*", SearchOption.TopDirectoryOnly).ToList();
-
-            if (!allFolders.Any())
+            // ✅ Process 10 folders at a time
+            foreach (var folder in allFolders)
             {
-                _logger.LogWarning("No folders found in {Path}", pdfFolderPath);
+                try
+                {
+                    var folderName = Path.GetFileName(folder) ?? string.Empty;
+                    var pdfFiles = Directory.GetFiles(folder, "*.pdf", SearchOption.TopDirectoryOnly);
+                    if (!pdfFiles.Any()) continue;
+
+                    string selectedPdf = pdfFiles.Length == 1
+                        ? pdfFiles[0]
+                        : pdfFiles
+                            .Select(p => new { Path = p, NameNoExt = Path.GetFileNameWithoutExtension(p) })
+                            .FirstOrDefault(x => string.Equals(x.NameNoExt?.Trim(), folderName.Trim(), StringComparison.OrdinalIgnoreCase))
+                            ?.Path ?? pdfFiles.OrderBy(p => p).First();
+
+                    var pdfName = Path.GetFileName(selectedPdf);
+                    allPdfFiles.Add((selectedPdf, pdfName));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error reading folder {Folder}", folder);
+                }
+            }
+
+            if (!allPdfFiles.Any())
+            {
+                _logger.LogWarning("No PDFs found in any folder.");
                 return;
             }
 
-            _logger.LogInformation("Total folders to process: {Count}", allFolders.Count);
+            // Step 2: Filter PDFs that exist in the database and are not completed
+            var pdfNames = allPdfFiles.Select(p => p.PdfName).ToList();
+            var matchedRecords = await Db.Legislations
+                .Where(l => pdfNames.Contains(l.SourceFileName) && (l.JobStatus != "completed"))
+                .ToListAsync();
 
-            // ✅ Process 10 folders at a time
-            for (int i = 0; i < allFolders.Count; i += batchSize)
+            var filteredPdfFiles = allPdfFiles
+                .Where(p => matchedRecords.Any(r => r.SourceFileName == p.PdfName))
+                .Select(p => p.PdfPath)
+                .ToList();
+
+            if (!filteredPdfFiles.Any())
             {
-                var folderBatch = allFolders.Skip(i).Take(batchSize).ToList();
-                _logger.LogInformation("Processing folder batch {BatchNum} ({Count} folders)", (i / batchSize) + 1, folderBatch.Count);
-
-                var pdfBatch = new List<(string PdfPath, string PdfName)>();
-
-                foreach (var folder in folderBatch)
-                {
-                    try
-                    {
-                        var folderName = Path.GetFileName(folder) ?? string.Empty;
-                        var pdfFiles = Directory.GetFiles(folder, "*.pdf", SearchOption.TopDirectoryOnly);
-                        if (pdfFiles.Length == 0)
-                            continue;
-
-                        string selectedPdf = pdfFiles.Length == 1
-                            ? pdfFiles[0]
-                            : pdfFiles
-                                .Select(p => new { Path = p, NameNoExt = Path.GetFileNameWithoutExtension(p) })
-                                .FirstOrDefault(x => string.Equals(
-                                    x.NameNoExt?.Trim(),
-                                    folderName.Trim(),
-                                    StringComparison.OrdinalIgnoreCase))?.Path
-                                ?? pdfFiles.OrderBy(p => p).First();
-
-                        var pdfName = Path.GetFileName(selectedPdf);
-
-                        pdfBatch.Add((selectedPdf, pdfName));
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error reading folder {Folder}", folder);
-                    }
-                }
-                var pdfNames = pdfBatch.Select(p => p.PdfName).ToList();
-                var matchedRecords = await Db.Legislations
-                    .Where(l => pdfNames.Contains(l.SourceFileName) && (l.JobStatus == null || l.JobStatus != "completed"))
-                    .ToListAsync();
-
-                var filteredPdfBatch = pdfBatch
-                    .Where(p => matchedRecords.Any(r => r.SourceFileName == p.PdfName))
-                    .Select(p => p.PdfPath)
-                    .ToList();
-
-                if (!filteredPdfBatch.Any())
-                {
-                    _logger.LogInformation("No matching old records found for this batch.");
-                    continue;
-                }
-                // 🔹 STEP 2: Process the selected PDFs in this batch
-                await ProcessPdfBatchAsync(filteredPdfBatch);
-
-                _logger.LogInformation("✅ Finished processing batch {BatchNum}.", (i / batchSize) + 1);
+                _logger.LogInformation("No matching records found in DB for any PDFs.");
+                return;
             }
 
-            _logger.LogInformation("🎉 All folder batches processed successfully.");
+            // Step 3: Process in batches of 10
+            const int batchSize = 10;
+            for (int i = 0; i < filteredPdfFiles.Count; i += batchSize)
+            {
+                var batch = filteredPdfFiles.Skip(i).Take(batchSize).ToList();
+                _logger.LogInformation("Processing batch {BatchNum} with {Count} PDFs.", (i / batchSize) + 1, batch.Count);
+
+                await ProcessPdfBatchAsync(batch);
+
+                _logger.LogInformation("Finished processing batch {BatchNum}.", (i / batchSize) + 1);
+            }
+
+            _logger.LogInformation("All folder batches processed successfully.");
         }
 
         public async Task ProcessPdfBatchAsync(List<string> pdfBatch)
         {
             try
             {
+
                 //using var oldDb = await _oldFactory.CreateDbContextAsync();
                 using var Db = await _Factory.CreateDbContextAsync();
-
-                var jobMap = new Dictionary<string, string>(); // pdf → jobId
 
                 // 1️⃣ Submit extract jobs
                 foreach (var pdfPath in pdfBatch)
                 {
+                    string pdfName = Path.GetFileName(pdfPath);
                     try
                     {
-                        string pdfName = Path.GetFileName(pdfPath);
-
-                        //// Check in old DB
-                        //var oldRecord = await Db.Legislations
-                        //    .Where(l => l.SourceFileName == pdfName)
-                        //    .FirstOrDefaultAsync();
-
                         // Check if already successful
-                        var existing = await Db.Legislations.FirstOrDefaultAsync(x => x.JobStatus != "completed");
+                        var existing = await Db.Legislations
+                            .FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+
+                        string language = existing.LanguageId switch
+                        {
+                            1 => "en",
+                            2 => "ar",
+                            _ => "en"
+                        };
 
                         if (existing == null)
                         {
-                            _logger.LogInformation("Skipping {Pdf}, already completed.", pdfName);
+                            _logger.LogWarning("PDF {Pdf} not found in database, skipping.", pdfName);
                             continue;
                         }
 
-                        JobStatusResponse? jobResponse = null;
-                        string language = "en";
-
-                        if (existing.LanguageId == 1)
-                            language = "en";
-                        else if (existing.LanguageId == 2)
-                            language = "ar";
-
-                        if (existing != null)
+                        if (string.IsNullOrEmpty(existing.JobStatus))
                         {
-                            var Response = await _extractService.SubmitExtractJobAsync(pdfPath, language);
+                            var response = await _extractService.SubmitExtractJobAsync(pdfPath, language);
 
-                            jobResponse.Status = Response.Status;
-                            jobResponse.JobId = Response.JobId;
+                            existing.JobId = response.JobId;
+                            existing.JobStatus = response.Status;
 
-                            //existing = new Models.NewEntities.Legislation
-                            //{
-                            //    LegislationId = oldRecord.LegislationId,
-                            //    Title = oldRecord.Title,
-                            //    StatusId = oldRecord.StatusId,
-                            //    DateOfIssuance = oldRecord.DateOfIssuance,
-                            //    HijriDate = oldRecord.HijriDate,
-                            //    IssuingAuthorityId = oldRecord.IssuingAuthorityId,
-                            //    LegislationTypeId = oldRecord.LegislationTypeId,
-                            //    OfficialGazetteNumber = oldRecord.OfficialGazetteNumber,
-                            //    SourceFileName = pdfName,
-                            //    PdfUrl = oldRecord.PdfUrl,
-                            //    CreatedBy = "system",
-                            //    CreatedAt = oldRecord.CreatedAt,
-                            //    SourceId = oldRecord.SourceId,
-                            //    LanguageId = oldRecord.LanguageId,
-                            //    Aisummary = oldRecord.Aisummary,
-                            //    DisplayName = oldRecord.DisplayName,
-                            //    Json = oldRecord.Json,
-                            //    CategoryId = oldRecord.CategoryId,
-                            //    SubCategoryId = oldRecord.SubCategoryId,
-                            //    Embeddings = oldRecord.Embeddings,
-                            //    Active = true,
-                            //    Number = oldRecord.Number,
-                            //    Version = oldRecord.Version,
-                            //    ParentLegislationId = oldRecord.ParentLegislationId,
-                            //    JobId = jobResponse.JobId,
-                            //    JobStatus = jobResponse.Status
-                            //};
-                            await using var transaction = await Db.Database.BeginTransactionAsync();
+                            Db.Legislations.Update(existing);
+                            await Db.SaveChangesAsync();
+                        }
+                        await Task.Delay(TimeSpan.FromMinutes(2));
 
-                            await Db.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations ON");
+                        while (existing.JobStatus == "pending" || existing.JobStatus == "processing")
+                        {
+                            var Response = await _jobStatusService.GetJobStatusAsync(existing.JobId ?? string.Empty);
 
-                            await Db.Legislations.AddAsync(existing);
+                            //TODO: Mapping fields from Response to existing legislation record
+                            existing.JobStatus = Response.Status;
+                            existing.JobId = Response.JobId;
+
+                            Db.Legislations.Update(existing);
                             await Db.SaveChangesAsync();
 
-                            await Db.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT Legislations OFF");
-
-                            await transaction.CommitAsync();
-                        }
-                       
-                        while (true)
-                        {
-                            var jobId = existing.JobId ?? jobResponse?.JobId;
-                            if (string.IsNullOrEmpty(jobId)) break;
-
-                            var status = await _jobStatusService.GetJobStatusAsync(jobId);
-                            if (status == "completed")
+                            if (existing.JobStatus == "pending" || existing.JobStatus == "processing")
                             {
-                                existing.JobStatus = status;
-                                Db.Legislations.Update(existing);
-                                await Db.SaveChangesAsync();
-                                _logger.LogInformation("Job completed for {Pdf} (JobId {JobId})", pdfName, jobId);
-                                break;
+                                _logger.LogInformation("Job still pending/processing for {Pdf}, retrying in 2 minutes...", pdfName);
+                                await Task.Delay(TimeSpan.FromMinutes(2));
                             }
 
-                            _logger.LogInformation("Job pending for {Pdf} (JobId {JobId}). Retrying in 2 minutes...", pdfName, jobId);
-                            await Task.Delay(TimeSpan.FromMinutes(2));
                         }
                     }
                     catch (Exception ex)

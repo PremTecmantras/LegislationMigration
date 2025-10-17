@@ -1,12 +1,10 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.EntityFrameworkCore;
-using LegislationMigration.Data;
-using LegislationMigration.Services.Interfaces;
+﻿using LegislationMigration.Data;
 using LegislationMigration.Services.Implementations;
-using LegislationMigration.Repositories.Interfaces;
-using LegislationMigration.Repositories.Implementations;
+using LegislationMigration.Services.Interfaces;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 internal class Program
 {
@@ -32,7 +30,6 @@ internal class Program
                 services.AddScoped<IReprocessService, LegislationReprocessService>();
                 services.AddScoped<IExtractService, ExtractService>();
                 services.AddScoped<IJobStatusService, JobStatusService>();
-                services.AddScoped<ILegislationRepository, LegislationRepository>();
 
                 services.AddLogging();
             })

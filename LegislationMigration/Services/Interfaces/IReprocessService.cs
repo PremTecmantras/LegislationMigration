@@ -1,4 +1,5 @@
-﻿using System;
+﻿using LegislationMigration.Data;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -9,6 +10,6 @@ namespace LegislationMigration.Services.Interfaces
     public interface IReprocessService
     {
         Task ReprocessLegislationAsync(string pdfFolderPath);
-        Task ProcessPdfBatchAsync(List<string> pdfBatch);
+        Task ProcessPdfBatchAsync(List<string> pdfBatch, NewDbContext Db);
     }
 }

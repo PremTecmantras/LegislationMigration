@@ -3,10 +3,9 @@ using LegislationMigration.Models.NewEntities;
 using LegislationMigration.Services.Interfaces;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Tokens;
 using Newtonsoft.Json;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace LegislationMigration.Services.Implementations
@@ -42,7 +41,6 @@ namespace LegislationMigration.Services.Implementations
 
             _logger.LogInformation("Total folders to process: {Count}", allFolders.Count);
 
-            using var Db = await _Factory.CreateDbContextAsync();
 
             var allPdfFiles = new List<(string PdfPath, string PdfName)>();
 
@@ -78,6 +76,8 @@ namespace LegislationMigration.Services.Implementations
 
             // Step 2: Filter PDFs that exist in the database and are not completed
             var pdfNames = allPdfFiles.Select(p => p.PdfName).ToList();
+
+            using var Db = await _Factory.CreateDbContextAsync();
             var matchedRecords = await Db.Legislations
                 .Where(l => pdfNames.Contains(l.SourceFileName) && (l.JobStatus != "completed"))
                 .ToListAsync();
@@ -100,7 +100,7 @@ namespace LegislationMigration.Services.Implementations
                 var batch = filteredPdfFiles.Skip(i).Take(batchSize).ToList();
                 _logger.LogInformation("Processing batch {BatchNum} with {Count} PDFs.", (i / batchSize) + 1, batch.Count);
 
-                await ProcessPdfBatchAsync(batch, Db);
+                await ProcessPdfBatchAsync(batch, matchedRecords, Db);
 
                 _logger.LogInformation("Finished processing batch {BatchNum}.", (i / batchSize) + 1);
             }
@@ -108,7 +108,7 @@ namespace LegislationMigration.Services.Implementations
             _logger.LogInformation("All folder batches processed successfully.");
         }
 
-        public async Task ProcessPdfBatchAsync(List<string> pdfBatch, NewDbContext Db)
+        public async Task ProcessPdfBatchAsync(List<string> pdfBatch, List<Legislation> allLegislations, NewDbContext Db)
         {
             string jsonOutputDir = "E:\\Prem\\Reprocessed json files";
 
@@ -117,7 +117,8 @@ namespace LegislationMigration.Services.Implementations
 
             try
             {
-                var batchJobs = new List<(string PdfPath, string PdfName, string JobId)>();
+                //var batchJobs = new List<(string PdfPath, string PdfName, string JobId)>();
+                var batchJobs = new List<(Legislation Legislation, string PdfPath)>();
                 // 1️⃣ Submit extract jobs
                 foreach (var pdfPath in pdfBatch)
                 {
@@ -125,30 +126,24 @@ namespace LegislationMigration.Services.Implementations
                     try
                     {
                         // Check if already successfull
-                        var existing = await Db.Legislations
-                            .FirstOrDefaultAsync(x => x.SourceFileName == pdfName);
+                        var legislation = allLegislations.FirstOrDefault(l => l.SourceFileName == pdfName);
 
-                        string language = existing.LanguageId switch
-                        {
-                            1 => "en",
-                            2 => "ar",
-                            _ => "en"
-                        };
-
-                        if (existing == null)
+                        if (legislation == null)
                         {
                             _logger.LogWarning("PDF {Pdf} not found in database, skipping.", pdfName);
                             continue;
                         }
 
-                        if (string.IsNullOrEmpty(existing.JobStatus))
+                        string language = legislation.LanguageId == 2 ? "ar" : "en";
+
+                        if (string.IsNullOrEmpty(legislation.JobStatus))
                         {
                             var response = await _extractService.SubmitExtractJobAsync(pdfPath, language);
 
-                            existing.JobId = response.JobId;
-                            existing.JobStatus = response.Status;
+                            legislation.JobId = response.JobId;
+                            legislation.JobStatus = response.Status;
                         }
-                        batchJobs.Add((pdfPath, pdfName, existing.JobId!));
+                        batchJobs.Add((legislation, pdfPath));
                     }
                     catch (Exception ex)
                     {
@@ -156,131 +151,9 @@ namespace LegislationMigration.Services.Implementations
                     }
                 }
                 await Db.SaveChangesAsync();
-                await CheckProcessingLegislationsAsync(Db);
-
+                //await CheckProcessingLegislationsAsync(Db);
+                await PollAndProcessResultsAsync(batchJobs, Db, jsonOutputDir);
                 //await Task.Delay(TimeSpan.FromMinutes(2));
-
-                bool anyPending = true;
-                while (anyPending)
-                {
-                    anyPending = false;
-
-                    foreach (var job in batchJobs)
-                    {
-                        try
-                        {
-                            var existing = await Db.Legislations.FirstOrDefaultAsync(x => x.SourceFileName == job.PdfName);
-
-                            if (existing == null || string.IsNullOrEmpty(existing.JobId)) continue;
-
-                            if (existing.JobStatus == "completed") continue;
-
-                                var response = await _jobStatusService.GetJobStatusAsync(existing.JobId);
-
-                                existing.JobStatus = response.Status;
-
-                                Db.Legislations.Update(existing);
-
-                            if (response.Status == "completed" && response.Result != null)
-                            {
-
-                                string jsonFileName = $"{Path.GetFileNameWithoutExtension(job.PdfName)}.json";
-                                string jsonFilePath = Path.Combine(jsonOutputDir, jsonFileName);
-                                string jsonContent = JsonConvert.SerializeObject(response, Formatting.Indented);
-
-                                await File.WriteAllTextAsync(jsonFilePath, jsonContent);
-                                _logger.LogInformation("Saved JSON response to {FilePath}", jsonFilePath);
-
-                                var existingArticles = await Db.Articles.Where(a => a.LegislationId == existing.LegislationId).ToListAsync();
-
-                                if (existingArticles.Any())
-                                {
-                                    Db.Articles.RemoveRange(existingArticles);
-                                }
-
-                                var newArticles = response.Result.Articles?.Select(a => new Article
-                                {
-                                    LegislationId = existing.LegislationId,
-                                    ArticleNumberText = a.ArticleNumber.ToString(),
-                                    ArticleTitle = a.Heading,
-                                    OldArticleBody = a.Text,
-                                    DisplayName = GetCleanDisplayName(a.Heading),
-                                    Active = true,
-                                    Aisummary = null,
-                                    CreatedBy = "System",
-                                    CreatedAt = DateTime.Now,
-                                    HasRelatedArticles = false
-                                }).ToList();
-
-                                if (newArticles?.Any() == true)
-                                {
-                                    await Db.Articles.AddRangeAsync(newArticles);
-                                    _logger.LogInformation("Inserted {Count} articles for {Pdf}", newArticles.Count, job.PdfName);
-                                }
-
-                                foreach(var art in response.Result.Articles)
-                                {
-                                    var savedArticle = await Db.Articles.FirstOrDefaultAsync(a => a.ArticleNumberText == art.ArticleNumber.ToString());
-                                    if(savedArticle == null) continue;
-
-                                    var isEnglish = existing.LanguageId == 1;
-                                    var domains = isEnglish ? art.DomainsEN : art.DomainsAR;
-                                    var rationales = isEnglish ? art.RationalesEN : art.RationalesAR;
-
-                                    if (domains != null && rationales != null && domains.Count == rationales.Count)
-                                    {
-                                        for (int i = 0; i < domains.Count; i++)
-                                        {
-                                            var domainName = domains[i];
-                                            var rationale = rationales[i];
-                                            var domainType = await Db.DomainTypes
-                                                .FirstOrDefaultAsync(d => d.DomainName == domainName &&
-                                                                          d.LanguageId == existing.LanguageId);
-
-                                            if (domainType == null)
-                                            {
-                                                domainType = new DomainType
-                                                {
-                                                    DomainName = domainName,
-                                                    LanguageId = existing.LanguageId
-                                                };
-
-                                                Db.DomainTypes.Add(domainType);
-                                            }
-
-                                            var domain = new Domain
-                                            {
-                                                DomainName = domainName,
-                                                Rationale = rationale,
-                                                CreatedBy = "System",
-                                                CreatedAt = DateTime.Now,
-                                                DomainTypeId = domainType.Id,
-                                                ArticleId = savedArticle.ArticleId
-                                            };
-
-                                            Db.Domains.Add(domain);
-                                        }
-                                    }
-                                }
-                                await Db.SaveChangesAsync();
-                            }
-                            if (existing.JobStatus != "completed")
-                                    anyPending = true;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Error checking job status for {Pdf}", job.PdfName);
-                            anyPending = true; // retry on failure
-                        }
-                    }
-
-                    if (anyPending)
-                    {
-                        _logger.LogInformation("Some jobs are still pending/processing. Waiting 2 minutes before next check...");
-                        //await CheckProcessingLegislationsAsync(Db);
-                        await Task.Delay(TimeSpan.FromMinutes(2));
-                    }
-                }
             }
             catch (SqlException)
             {
@@ -288,11 +161,136 @@ namespace LegislationMigration.Services.Implementations
             }
             catch (Exception)
             {
-
                 throw;
             }
         }
+        private async Task PollAndProcessResultsAsync(
+            List<(Legislation Legislation, string PdfPath)> batchJobs,
+            NewDbContext Db,
+            string jsonOutputDir)
+        {
+            bool anyPending = true;
+            while (anyPending)
+            {
+                anyPending = false;
+                var toUpdate = new List<Legislation>();
+                var newArticles = new List<Article>();
+                var newDomains = new List<Domain>();
+                var knownDomainTypes = (await Db.DomainTypes.ToListAsync())
+        .ToDictionary(d => (d.DomainName.ToLower(), d.LanguageId), d => d);
 
+                var newDomainTypes = new List<DomainType>();
+
+                foreach (var (legislation, pdfPath) in batchJobs)
+                {
+                    try
+                    {
+                        if (legislation.JobStatus == "completed" || string.IsNullOrEmpty(legislation.JobId))
+                            continue;
+
+                        var response = await _jobStatusService.GetJobStatusAsync(legislation.JobId);
+                        //var response = await _jobStatusService.GetJobStatusAsync(existing.JobId);
+
+                        legislation.JobStatus = response.Status;
+                        toUpdate.Add(legislation);
+
+                        if (response.Status == "completed" && response.Result != null)
+                        {
+
+                            string jsonFile = Path.Combine(jsonOutputDir, $"{Path.GetFileNameWithoutExtension(pdfPath)}.json");
+                            await File.WriteAllTextAsync(jsonFile, JsonConvert.SerializeObject(response, Formatting.Indented));
+
+                            //var existingArticles = await Db.Articles.Where(a => a.LegislationId == existing.LegislationId).ToListAsync();
+
+                            //if (existingArticles.Any())
+                            //{
+                            //    Db.Articles.RemoveRange(existingArticles);
+                            //}
+
+                            foreach (var a in response.Result.Articles)
+                            {
+                                var art = new Article
+                                {
+                                    LegislationId = legislation.LegislationId,
+                                    ArticleNumberText = a.ArticleNumber.ToString(),
+                                    ArticleTitle = a.Heading,
+                                    OldArticleBody = a.Text,
+                                    DisplayName = GetCleanDisplayName(a.Heading),
+                                    Active = true,
+                                    CreatedBy = "System",
+                                    CreatedAt = DateTime.Now
+                                };
+                                newArticles.Add(art);
+
+                                var isEnglish = legislation.LanguageId == 1;
+                                var domains = isEnglish ? a.DomainsEN : a.DomainsAR;
+                                var rationales = isEnglish ? a.RationalesEN : a.RationalesAR;
+
+                                if (domains != null && rationales != null && domains.Count == rationales.Count)
+                                {
+                                    for (int i = 0; i < domains.Count; i++)
+                                    {
+                                        var domainName = domains[i];
+                                        var rationale = rationales[i];
+
+                                        var key = (domainName.ToLower(), legislation.LanguageId);
+
+                                        if (!knownDomainTypes.TryGetValue(key, out var domainType))
+                                        {
+                                            domainType = new DomainType
+                                            {
+                                                DomainName = domainName,
+                                                LanguageId = legislation.LanguageId
+                                            };
+                                            knownDomainTypes[key] = domainType;
+                                            newDomainTypes.Add(domainType);
+                                        }
+
+                                        newDomains.Add(new Domain
+                                        {
+                                            DomainName = domainName,
+                                            Rationale = rationale,
+                                            CreatedBy = "System",
+                                            CreatedAt = DateTime.Now,
+                                            DomainType = domainType,
+                                            Article = art
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        if (legislation.JobStatus != "completed")
+                            anyPending = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error checking job status for {Pdf}");
+                        anyPending = true; // retry on failure
+                    }
+                }
+
+                if (toUpdate.Any())
+                    Db.Legislations.UpdateRange(toUpdate);
+
+                if (newDomainTypes.Any())
+                    await Db.DomainTypes.AddRangeAsync(newDomainTypes);
+
+                if (newArticles.Any())
+                    await Db.Articles.AddRangeAsync(newArticles);
+
+                if (newDomains.Any())
+                    await Db.Domains.AddRangeAsync(newDomains);
+
+                await Db.SaveChangesAsync();
+
+                if (anyPending)
+                {
+                    _logger.LogInformation("Some jobs are still pending/processing. Waiting 2 minutes before next check...");
+                    //await CheckProcessingLegislationsAsync(Db);
+                    await Task.Delay(TimeSpan.FromMinutes(2));
+                }
+            }
+        }
         public static string GetCleanDisplayName(string title)
         {
             if (string.IsNullOrWhiteSpace(title)) return string.Empty;
@@ -309,7 +307,7 @@ namespace LegislationMigration.Services.Implementations
         }
         public async Task CheckProcessingLegislationsAsync(NewDbContext db)
         {
-          //  using var db = await _Factory.CreateDbContextAsync();
+            //  using var db = await _Factory.CreateDbContextAsync();
 
             var processingLegislations = await db.Legislations
                 .Where(l => l.JobStatus == "processing" && l.JobId != null)
@@ -319,7 +317,7 @@ namespace LegislationMigration.Services.Implementations
             if (!processingLegislations.Any())
             {
                 _logger.LogInformation("No processing legislations found.");
-                return ;
+                return;
             }
 
             _logger.LogInformation("Found {Count} processing legislations.", processingLegislations.Count);

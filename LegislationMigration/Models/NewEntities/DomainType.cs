@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 
 namespace LegislationMigration.Models.NewEntities;
 
 public partial class DomainType
 {
+    [Key]
     public int Id { get; set; }
 
     public string DomainName { get; set; } = null!;

@@ -27,15 +27,28 @@ namespace LegislationMigration.Services.Implementations
         {
             try
             {
-                using var client = _factory.CreateClient();
-                var baseUrl = _config["AIService:ExtractionUrl"];
-                var response = await client.GetAsync($"{baseUrl}status/{jobId}");
-                response.EnsureSuccessStatusCode();
+                string testJsonDir = @"E:\Prem\Reprocessed json files"; // same folder you save JSON to
+                string jsonFilePath = Path.Combine(testJsonDir, "مرسوم رقم (47) لسنة 2023 بتشكيل مجلس إدارة مؤسسة تنظيم الصناعة الأمنية.json");
 
-                var json = await response.Content.ReadAsStringAsync();
-                var status = JsonConvert.DeserializeObject<JobStatusResponse>(json);
+                    _logger.LogInformation("Loading JobStatusResponse from file: {FilePath}", jsonFilePath);
 
-                return status;
+                    string json = await File.ReadAllTextAsync(jsonFilePath);
+                    var response = JsonConvert.DeserializeObject<JobStatusResponse>(json);
+
+                    if (response == null)
+                        throw new InvalidDataException($"Failed to deserialize JSON file {jsonFilePath}");
+
+                    return response;
+
+                //using var client = _factory.CreateClient();
+                //var baseUrl = _config["AIService:ExtractionUrl"];
+                //var response = await client.GetAsync($"{baseUrl}status/{jobId}");
+                //response.EnsureSuccessStatusCode();
+
+                //var json = await response.Content.ReadAsStringAsync();
+                //var status = JsonConvert.DeserializeObject<JobStatusResponse>(json);
+
+                //return status;
             }
             catch (Exception ex)
             {

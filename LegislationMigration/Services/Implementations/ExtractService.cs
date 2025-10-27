@@ -28,25 +28,30 @@ namespace LegislationMigration.Services.Implementations
         {
             try
             {
-                using var client = _client.CreateClient();
-                var apiUrl = _config["AIService:BaseApiUrl"];
+                //using var client = _client.CreateClient();
+                //var apiUrl = _config["AIService:BaseApiUrl"];
 
-                using var content = new MultipartFormDataContent();
-                using var fileStream = File.OpenRead(pdfPath);
-                var fileContent = new StreamContent(fileStream);
-                fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
-                content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
-                
-                var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
-                var result = await response.Content.ReadAsStringAsync();
+                //using var content = new MultipartFormDataContent();
+                //using var fileStream = File.OpenRead(pdfPath);
+                //var fileContent = new StreamContent(fileStream);
+                //fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+                //content.Add(fileContent, "pdf", Path.GetFileName(pdfPath));
 
-                if (!response.IsSuccessStatusCode)
+                //var response = await client.PostAsync($"{apiUrl}extract?language={language}", content);
+                //var result = await response.Content.ReadAsStringAsync();
+
+                //if (!response.IsSuccessStatusCode)
+                //{
+                //    _logger.LogWarning("Failed to submit extract job for {Pdf}. StatusCode: {StatusCode}", pdfPath, response.StatusCode);
+                //    return null;
+                //}
+
+                var jobResponse = new ExtractJobResponse 
                 {
-                    _logger.LogWarning("Failed to submit extract job for {Pdf}. StatusCode: {StatusCode}", pdfPath, response.StatusCode);
-                    return null;
-                }
-
-                var jobResponse = JsonConvert.DeserializeObject<ExtractJobResponse>(result);
+                    JobId = "Test",
+                    Status = "Processsing",
+                    Message = "Job submitted successfully"
+                };
 
                 if (jobResponse == null)
                 {
